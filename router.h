@@ -47,13 +47,84 @@ const __u32 syn_2_mask_2 = 0x08010100;
 const __u64 syn_3_mask_1 = 0x0000070100000002;
 const __u32 syn_3_mask_2 = 0x08000400;
 
+//NOP NOP Timstamp
+const __u64 ack_1_mask = 0x000000000080101;
+
+struct tcp_opt_ts {
+    __u8 kind;      
+    __u8 length;    
+    __u32 tsval;    
+    __u32 tsecr;    
+}__attribute__((packed));
+
+struct common_synack_opt {
+    __u32 MSS;      
+    __u16 SackOK;    
+    struct tcp_opt_ts ts;        
+}__attribute__((packed));
+
+
+static __always_inline void _decr_ttl(__u16 proto, void *h) {
+    if (proto == ETH_P_IP) {
+        struct iphdr *ip = h;
+        __u32 c = ip->check;
+        c += bpf_htons(0x0100);
+        ip->check = (__u16)(c + (c >= 0xffff));
+        --ip->ttl;
+    } else if (proto == ETH_P_IPV6) --((struct ipv6hdr*) h)->hop_limit;
+}
+
+static __always_inline __u16 csum_fold_helper_64(__u64 csum) {
+
+    int i;
+    #pragma unroll
+    for (i = 0; i < 4; i++) {
+    if (csum >> 16)
+        csum = (csum & 0xffff) + (csum >> 16);
+    }
+    return ~csum;
+}
+
+static __always_inline __u16 csum_fold_helper(__u32 csum)
+{
+	__u32 sum;
+	sum = (csum >> 16) + (csum & 0xffff);
+	sum += (sum >> 16);
+	return ~sum;
+}
+
+static __always_inline void ipv4_l4_csum(void* data_start, const __u64 data_size, __u64* csum, struct iphdr* iph) {
+    __u32 tmp = 0;
+    *csum = bpf_csum_diff(0, 0, &iph->saddr, sizeof(__be32), *csum);
+    *csum = bpf_csum_diff(0, 0, &iph->daddr, sizeof(__be32), *csum);
+    tmp = __builtin_bswap32((__u32)(iph->protocol));
+    *csum = bpf_csum_diff(0, 0, &tmp, sizeof(__u32), *csum);
+    tmp = __builtin_bswap32((__u32)(data_size));
+    *csum = bpf_csum_diff(0, 0, &tmp, sizeof(__u32), *csum);
+    *csum = bpf_csum_diff(0, 0, data_start, data_size, *csum);
+    *csum = csum_fold_helper_64(*csum);
+}
+
+static __always_inline __u16 ip_checksum_diff(
+		__u16 seed,
+		struct iphdr *iphdr_new,
+		struct iphdr *iphdr_old)
+{
+	__u32 csum, size = 20;
+
+	csum = bpf_csum_diff((__be32 *)iphdr_old, size, (__be32 *)iphdr_new, size, seed);
+	return csum_fold_helper(csum);
+}
+
+
+
 static inline __u32 rol(__u32 word, __u32 shift){
 	return (word<<shift) | (word >> (32 - shift));
 }
 
 
 
-static __u32 get_hash(__u32 src, __u32 dst, __u16 src_port, __u16 dst_port ){
+static __always_inline __u32 get_hash(__u32 src, __u32 dst, __u16 src_port, __u16 dst_port ){
 	
 	//initialization 
 	int v0 = c0 ^ key0;
@@ -90,24 +161,46 @@ static __u32 get_hash(__u32 src, __u32 dst, __u16 src_port, __u16 dst_port ){
 	__u32 hash = (v0^v1)^(v2^v3);
         return hash; 	
 }
+static __always_inline __u32 get_hash_2(__u32 src, __u32 dst, __u16 src_port, __u16 dst_port ){
+	
+	//initialization 
+	int v0 = c0 ^ key0;
+	int v1 = c1 ^ key1;
+	int v2 = c2 ^ key0;
+	int v3 = c3 ^ key1; 
+	
+	//first message 
+	v3 = v3 ^ bpf_ntohl(src);
+	SIPROUND;
+	SIPROUND;
+	v0 = v0 ^ bpf_ntohl(src); 
 
+	//second message 
+	v3 = v3 ^ bpf_ntohl(dst);
+	SIPROUND;
+	SIPROUND;
+	v0 = v0 ^ bpf_ntohl(dst); 
+
+	//third message
+	__u32 ports = (__u32) dst_port << 16 | (__u32) src_port;  
+	v3 = v3 ^ bpf_ntohl(ports);
+	SIPROUND;
+	SIPROUND;
+	v0 = v0 ^ bpf_ntohl(ports); 
+	
+	//finalization
+	v2 = v2 ^ 0xFF; 
+	SIPROUND;
+	SIPROUND;
+	SIPROUND;
+	SIPROUND;
+
+	__u32 hash = (v0^v1)^(v2^v3);
+        return hash; 	
+}
 struct hdr_cursor {
 	void *pos;
 };
-
-struct tcp_opt_ts {
-    __u8 kind;      
-    __u8 length;    
-    __u32 tsval;    
-    __u32 tsecr;    
-}__attribute__((packed));
-
-struct common_synack_opt {
-    __u32 MSS;      
-    __u16 SackOK;    
-    struct tcp_opt_ts ts;        
-}__attribute__((packed));
-
 
 
 static __always_inline int parse_ethhdr(struct hdr_cursor *nh,
@@ -201,7 +294,7 @@ static __always_inline int parse_tcphdr(struct hdr_cursor *nh,
 	return len;
 }
 
-static inline __u32 parse_timestamp(struct hdr_cursor *nh,
+static inline __u32 parse_syn_timestamp(struct hdr_cursor *nh,
 									void *data_end,
 									struct tcp_opt_ts **tshdr) {
 	struct tcp_opt_ts* ts;
@@ -209,7 +302,7 @@ static inline __u32 parse_timestamp(struct hdr_cursor *nh,
     //void* l4hdr = (data + sizeof(strct ethhdr))
     __u64* tcp_opt_64 = nh->pos;
 	if(tcp_opt_64 + 1 > data_end){
-        DEBUG_PRINT("Drop at router.h 222\n");
+        DEBUG_PRINT("Drop at parse_syn_timestamp\n");
 
 		return -1;
 	}
@@ -227,7 +320,7 @@ static inline __u32 parse_timestamp(struct hdr_cursor *nh,
 		nh->pos += 8;
 		__u32* tcp_opt_32 = nh->pos;
 		if(tcp_opt_32 + 1 > data_end){
-        	DEBUG_PRINT("Drop at router.h 240\n");
+        	DEBUG_PRINT("Drop at parse_syn_timestamp\n");
 			return -1;
 		}
 		if((syn_2_mask_1 & *tcp_opt_64) == syn_2_mask_1){
@@ -245,9 +338,8 @@ static inline __u32 parse_timestamp(struct hdr_cursor *nh,
 			}  
     	}
 		else {
-			DEBUG_PRINT("No Timestamp in options\n");
-        	DEBUG_PRINT("Drop at router.h 259\n");
-			return -1;
+			DEBUG_PRINT("Slow path match timestamp\n");
+			
 		}
 	}
 	nh->pos += opt_ts_offset;
@@ -256,12 +348,47 @@ static inline __u32 parse_timestamp(struct hdr_cursor *nh,
 		if(ts + 1 > data_end){
 			return -1;
 		} 
-
-		
 		nh->pos = ts + 1;
 		*tshdr = ts;
 
     return opt_ts_offset;
 }
+
+static inline __u32 parse_ack_timestamp(struct hdr_cursor *nh,
+									void *data_end,
+									struct tcp_opt_ts **tshdr) {
+	struct tcp_opt_ts* ts;
+    int opt_ts_offset = -1;
+    //void* l4hdr = (data + sizeof(strct ethhdr))
+    __u64* tcp_opt_64 = nh->pos;
+	if(tcp_opt_64 + 1 > data_end){
+        DEBUG_PRINT("Drop at parse_ack_timestamp\n");
+		return -1;
+	}
+
+    // Mask: MSS(4B), SackOK(2B), Timestamp(1B)
+    if((ack_1_mask & *tcp_opt_64) == ack_1_mask){
+        DEBUG_PRINT("Match NOP, NOP, Timestamp\n");
+        opt_ts_offset = 2;
+        // ts = (struct tcp_opt_ts*)(l4hdr + 20 + 6);
+        // if((void*)ts + sizeof(struct tcp_opt_ts) > data_end) return -1;
+        // rx_tsval = ts->tsval;
+    }
+	else{
+		DEBUG_PRINT("Slow path match timestamp\n");
+	}
+
+	nh->pos += opt_ts_offset;
+	if(nh->pos + opt_ts_offset > data_end) return -1;
+	ts = nh->pos;
+	if(ts + 1 > data_end){
+        DEBUG_PRINT("Drop at parse_ack_timestamp\n");
+		return -1;
+	} 
+	nh->pos = ts + 1;
+	*tshdr = ts;
+    return opt_ts_offset;
+}
+
 
 #endif // ROUTER_H
