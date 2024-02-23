@@ -16,7 +16,7 @@ BPF_CFLAGS += -Wall -Wextra
 
 .PHONY: all clean
 
-all: router.o
+all: router.o server_in.o
 
 clean:
 	rm -rf $(LIBBPF_DIR)/build
@@ -31,6 +31,10 @@ $(LIBBPF):
 		mkdir -p build; DESTDIR=build $(MAKE) install_headers; \
 	fi
 
-router.o: router.c $(LIBBPF)
+router.o: router.c router.h $(LIBBPF)
+	$(CLANG) -S -target bpf $(BPF_CFLAGS) -O3 -emit-llvm -c -g -o ${@:.o=.ll} $<
+	$(LLC) -march=bpf -filetype=obj -o $@ ${@:.o=.ll}
+
+server_in.o: server_in.c router.h $(LIBBPF)
 	$(CLANG) -S -target bpf $(BPF_CFLAGS) -O3 -emit-llvm -c -g -o ${@:.o=.ll} $<
 	$(LLC) -march=bpf -filetype=obj -o $@ ${@:.o=.ll}
