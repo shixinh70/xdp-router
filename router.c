@@ -113,8 +113,8 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                     // bfp_csum_diff 's seed need to add "~~~~~~~~~~~~~~~~~~"
                     //## Since only change ip_totlen new ip_csum
                     // to __bultin_bswap32() depend on header's position
-                    ip->check = csum_fold_helper_64(bpf_csum_diff((__u32*)&old_ip_totlen,32
-                                                                 ,(__u32*)&new_ip_totlen,32,~old_ip_csum));
+                    ip->check = csum_fold_helper_64(bpf_csum_diff((__u32*)&old_ip_totlen,4
+                                                                 ,(__u32*)&new_ip_totlen,4,~old_ip_csum));
                   
                     // Modify tcphdr after shrink packet
                     tcp->seq = get_hash(orig_src_ip,orig_dst_ip,orig_src_port,orig_dst_port);
