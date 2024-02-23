@@ -111,6 +111,10 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         tcp->check = csum_fold_helper_64(tcp_csum);
 
                     }
+                    else{
+                        DEBUG_PRINT("Ack packet tsecr != TS_START, and NO payload\n \
+                                    \n");
+                    }
                 }
                 
             

@@ -16,7 +16,7 @@ BPF_CFLAGS += -Wall -Wextra
 
 .PHONY: all clean
 
-all: router.o server_in.o
+all: router.o server_in.o hping_ts.o
 
 clean:
 	rm -rf $(LIBBPF_DIR)/build
@@ -36,5 +36,9 @@ router.o: router.c router.h $(LIBBPF)
 	$(LLC) -march=bpf -filetype=obj -o $@ ${@:.o=.ll}
 
 server_in.o: server_in.c router.h $(LIBBPF)
+	$(CLANG) -S -target bpf $(BPF_CFLAGS) -O3 -emit-llvm -c -g -o ${@:.o=.ll} $<
+	$(LLC) -march=bpf -filetype=obj -o $@ ${@:.o=.ll}
+
+hping_ts.o: hping_ts.c router.h $(LIBBPF)
 	$(CLANG) -S -target bpf $(BPF_CFLAGS) -O3 -emit-llvm -c -g -o ${@:.o=.ll} $<
 	$(LLC) -march=bpf -filetype=obj -o $@ ${@:.o=.ll}
