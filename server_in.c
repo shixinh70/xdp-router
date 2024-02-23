@@ -63,14 +63,13 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                 if(tcp->ack && (!tcp->syn)){
                     int opt_ts_offset = parse_ack_timestamp(&cur,data_end,&ts);
                     if(opt_ts_offset == -1) return XDP_DROP;   
-                    __u32 tsecr = ts->tsecr;
+                    __u32 tsecr = bpf_ntohl(ts->tsecr);
                     void* tcp_header_end = (void*)tcp + (tcp->doff*4);
                     if(tcp_header_end > data_end) return XDP_DROP;
                     // Ack packet which TS == TS_START and no payload.
                     // Insert new connection 
                     if (tsecr == TS_START && (tcp_header_end == data_end)){
-                        DEBUG_PRINT("Ack packet tsecr == TS_START, and NO payload\n \
-                                     Create conntrack\n");
+                        DEBUG_PRINT("Ack packet tsecr == TS_START, and NO payload, Create conntrack--\n");
                         struct map_key_t key = {
                             .src_ip = ip->saddr,
                             .dst_ip = ip->daddr,
@@ -91,23 +90,28 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         __u64 tcp_csum = tcp->check;
                         __u32 old_tcp_tsecr = ts->tsecr;
                         __u32* ptr ; 
-                        ptr = ((__u32*)tcp) + 3;
-                        //if(((__u32*)tcp) + 3 > data_end) return XDP_DROP;
-                        if((void*)ptr + 32 > data_end) return XDP_DROP;
+                        ptr = ((void*)tcp) + 12;
+                        DEBUG_PRINT("ffddd\n");
+
+                        // if(((void*)tcp) + 12 > data_end) return XDP_DROP;
+                        // DEBUG_PRINT("ffffffff\n");
+
+                        if((void*)ptr + 4 > data_end) return XDP_DROP;
+                        DEBUG_PRINT("asdasd\n");
                         __u32 tcp_old_flag = *ptr;
 
-                        tcp->ack = 0;tcp->syn = 0;
+                        tcp->ack = 0;tcp->syn = 1;
                         __u32 tcp_new_flag = *ptr;
 
                         tcp->seq -= bpf_htonl(1);
                         tcp->ack_seq = 0;
                         ts->tsecr = 0;
                         
-                        // Compute TCP checksum
-                        tcp_csum = bpf_csum_diff(&tcp_old_flag, 32, &tcp_new_flag, 32, tcp_csum);
-                        tcp_csum = bpf_csum_diff(&old_tcp_seq, 32, &tcp->seq, 32, tcp_csum);
-                        tcp_csum = bpf_csum_diff(&old_tcp_ack, 32, 0, 0, tcp_csum);
-                        tcp_csum = bpf_csum_diff(&old_tcp_tsecr, 32, 0, 0, tcp_csum);
+                        //Compute TCP checksum
+                        tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
+                        tcp_csum = bpf_csum_diff(&old_tcp_seq, 4, &tcp->seq, 4, tcp_csum);
+                        tcp_csum = bpf_csum_diff(&old_tcp_ack, 4, 0, 0, tcp_csum);
+                        tcp_csum = bpf_csum_diff(&old_tcp_tsecr, 4, 0, 0, tcp_csum);
                         tcp->check = csum_fold_helper_64(tcp_csum);
 
                     }
