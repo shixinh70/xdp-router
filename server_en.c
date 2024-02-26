@@ -106,7 +106,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                 // if SYN-ACK packet (from server)
                 // Swap ip address, port, timestamp, mac. and conver it to ack.
                 if(tcp->ack && tcp->syn){
-
+                    DEBUG_PRINT ("TC:SYNACK packet ingress!\n");
 
                     // Modify delta (need to check the byte order problem)
                     val.delta -= (tcp->ack_seq + (bpf_htonl(1)));
