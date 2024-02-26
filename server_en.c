@@ -140,7 +140,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     tcp->seq += bpf_htonl(1);
 
                     tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
-                    tcp_csum += bpf_htonl(1);
+                    tcp_csum -= bpf_htonl(1);
                     tcp->check = csum_fold_helper_64(tcp_csum);
 
                     // Swap tsval and tsecr. Do we need to change the ts order to NOP NOP TS ?   
