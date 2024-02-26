@@ -92,7 +92,10 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
             if(val_p) {
                 DEBUG_PRINT ("TC:Connection exist in map!\n");
             }
-
+            else {
+                DEBUG_PRINT ("TC:Connection not exist in map!\n");
+                
+            }
             // Read val from pinned map;
             if( bpf_probe_read_kernel(&val,sizeof(val),val_p) != 0){
                 DEBUG_PRINT ("TC:Read map_val fail!\n");
