@@ -412,6 +412,7 @@ static inline __u32 parse_synack_timestamp(struct hdr_cursor *nh,
     }
 	else{
 		DEBUG_PRINT("TC:Slow path match timestamp\n");
+		opt_ts_offset = 6;
 	}
 
 	nh->pos += opt_ts_offset;
