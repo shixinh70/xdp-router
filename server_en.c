@@ -123,7 +123,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     __u64 tcp_csum = tcp->check;
                     __u32* ptr ; 
                     ptr = ((void*)tcp) + 12;
-                    if((void*)ptr + 4 > data_end) return XDP_DROP;
+                    if((void*)ptr + 4 > data_end) return TC_ACT_SHOT;
                        
                     __u32 tcp_old_flag = *ptr;
                     tcp->syn = 0;tcp->ack = 1;
@@ -136,7 +136,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
 
                     __u32 rx_seg = tcp->seq;
                     tcp->seq = tcp->ack_seq;
-                    tcp->ack_seq = rx_seg + bpf_htonl(1);
+                    tcp->ack_seq = rx_seg ;
 
 
                     tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
