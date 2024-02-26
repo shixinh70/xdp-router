@@ -57,7 +57,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
             if(tcphdr_len == -1) return XDP_DROP;
             if(tcphdr_len >= 32){ // Timestamp need 12 byte (Nop Nop timestamp)
             struct tcp_opt_ts* ts;
-            DEBUG_PRINT("TCP packet (with options) ingress\n");
+            DEBUG_PRINT("SERVER_IN: TCP packet (with options) ingress\n");
             // This parse timestamp may can be optimize
             // Switch agent have parse the timestamp so can put the ts type
             // in some un-used header field.
@@ -70,7 +70,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                     // Ack packet which TS == TS_START and no payload.
                     // Insert new connection 
                     if (tsecr == TS_START && (tcp_header_end == data_end)){
-                        DEBUG_PRINT("Ack packet tsecr == TS_START, and NO payload, Create conntrack--\n");
+                        DEBUG_PRINT("SERVER_IN: Ack packet tsecr == TS_START, and NO payload, Create conntrack--\n");
                         struct map_key_t key = {
                             .src_ip = ip->saddr,
                             .dst_ip = ip->daddr,
@@ -120,7 +120,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
 
                     }
                     else{
-                        DEBUG_PRINT("Ack packet tsecr != TS_START, and NO payload\n \
+                        DEBUG_PRINT("SERVER_IN: Ack packet tsecr != TS_START, and NO payload\n \
                                     \n");
                     }
                 }
@@ -128,7 +128,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
             
             }
             else{
-                DEBUG_PRINT("No options TCP packet ingress, Foward\n");
+                DEBUG_PRINT("SERVER_IN: No options TCP packet ingress, Foward\n");
 
             }
         } 
