@@ -120,7 +120,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     ip->saddr ^= ip->daddr;
 
                     // Swap port and convert to ack packet
-                    //__u64 tcp_csum = tcp->check;
+                    __u64 tcp_csum = tcp->check;
                     __u32* ptr ; 
                     ptr = ((void*)tcp) + 12;
                     if((void*)ptr + 4 > data_end) return TC_ACT_SHOT;
@@ -139,9 +139,10 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     tcp->ack_seq = rx_seg + bpf_htonl(1);
                     DEBUG_PRINT("TC:ACK seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
 
-                    // tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
-                    // tcp_csum = bpf_csum_diff(&rx_seg, 4, &tcp->ack_seq, 4, tcp_csum);
-                    // tcp->check = csum_fold_helper_64(tcp_csum) ;
+                    tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
+                    tcp_csum = bpf_csum_diff(&rx_seg, 4, &tcp->ack_seq, 4, tcp_csum);
+                    __u16 tcp_csum_16 = csum_fold_helper_64(tcp_csum) ;
+                    tcp->check = tcp_csum_16;
                     
 
                     // Swap tsval and tsecr. Do we need to change the ts order to NOP NOP TS ?   
@@ -149,14 +150,12 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     ts->tsecr ^= ts->tsval;
                     ts->tsval ^= ts->tsecr;
 
-                    tcp->check = 0;
+                    // tcp->check = 0;
 
-                    __u64 tcp_csum_tmp = 0;
-                    if(((void*)tcp)+ 36 > data_end) return XDP_DROP;
-                    ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 36 bytes
-                    tcp->check = tcp_csum_tmp;
+                    // __u64 tcp_csum_tmp = 0;
+                    // if(((void*)tcp)+ 36 > data_end) return XDP_DROP;
+                    // ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 36 bytes
                     DEBUG_PRINT ("TC:SYNACK packet ingress! csum = %x\n",bpf_ntohs(tcp->check));
-
 
                     // Swap mac.
                     struct eth_mac_t mac_tmp;
