@@ -155,7 +155,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     // __u64 tcp_csum_tmp = 0;
                     // if(((void*)tcp)+ 36 > data_end) return XDP_DROP;
                     // ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 36 bytes
-                    DEBUG_PRINT ("TC:SYNACK packet ingress! csum = %x\n",bpf_ntohs(tcp->check));
+                    DEBUG_PRINT ("TC:SYNACK TO ACK! csum = %x\n",bpf_ntohs(tcp_csum_16));
 
                     // Swap mac.
                     struct eth_mac_t mac_tmp;
