@@ -70,7 +70,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
             if(tcphdr_len == -1) return TC_ACT_SHOT;
             if(tcphdr_len >= 32){ // Timestamp need 12 byte (Nop Nop timestamp)
             struct tcp_opt_ts* ts;
-            DEBUG_PRINT("TCP packet (with options) ingress\n");
+            DEBUG_PRINT("TC:TCP packet (with options) ingress\n");
 
             // This parse timestamp may can be optimize
             // Switch agent have parse the timestamp so can put the ts type
@@ -90,12 +90,12 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
             struct map_val_t val;
             struct map_val_t* val_p = bpf_map_lookup_elem(&conntrack_map,&key);
             if(val_p) {
-                DEBUG_PRINT ("Connection exist in map!\n");
+                DEBUG_PRINT ("TC:Connection exist in map!\n");
             }
 
             // Read val from pinned map;
             if( bpf_probe_read_kernel(&val,sizeof(val),val_p) != 0){
-                DEBUG_PRINT ("Read map_val fail!\n");
+                DEBUG_PRINT ("TC:Read map_val fail!\n");
                 return TC_ACT_SHOT;
             }
             
@@ -138,7 +138,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
             
             }
             else{
-                DEBUG_PRINT("No options TCP packet ingress, Foward\n");
+                DEBUG_PRINT("TC:No options TCP packet ingress, Foward\n");
 
             }
         } 
