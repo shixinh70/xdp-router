@@ -106,11 +106,11 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                 // if SYN-ACK packet (from server)
                 // Swap ip address, port, timestamp, mac. and conver it to ack.
                 if(tcp->ack && tcp->syn){
-                    DEBUG_PRINT ("TC:SYNACK packet ingress! csum = %d\n",bpf_ntohs(tcp->check));
+                    DEBUG_PRINT ("TC:SYNACK packet ingress! csum = %x\n",bpf_ntohs(tcp->check));
 
                     // Modify delta (need to check the byte order problem)
                     val.delta -= (tcp->ack_seq + (bpf_htonl(1)));
-                    DEBUG_PRINT("TC:Update delta = %d\n", bpf_htonl(val.delta));
+                    DEBUG_PRINT("TC:Update delta = %u\n", bpf_htonl(val.delta));
                     //BPF_EXIST will update an existing element (may have bug)
                     bpf_map_update_elem(&conntrack_map,&key,&val,BPF_EXIST);
 
@@ -120,9 +120,17 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     ip->saddr ^= ip->daddr;
 
                     // Swap port and convert to ack packet
-
-                    tcp->syn = 0;
-                    tcp->ack = 1;
+                    __u64 tcp_csum = tcp->check;
+                    __u32* ptr ; 
+                    ptr = ((void*)tcp) + 12;
+                    if((void*)ptr + 4 > data_end) return XDP_DROP;
+                       
+                    __u32 tcp_old_flag = *ptr;
+                    tcp->syn = 0;tcp->ack = 1;
+                    __u32 tcp_new_flag = *ptr;
+                    tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
+                    tcp->check = csum_fold_helper_64(tcp_csum);
+                    
                     tcp->source ^= tcp->dest;
                     tcp->dest ^= tcp->source;
                     tcp->source ^= tcp->dest;
