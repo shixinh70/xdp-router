@@ -133,11 +133,11 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     tcp->source ^= tcp->dest;
                     tcp->dest ^= tcp->source;
                     tcp->source ^= tcp->dest;
-
+                    DEBUG_PRINT("TC:SYNACK seg = %d, ack = %d\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
                     __u32 rx_seg = tcp->seq;
                     tcp->seq = tcp->ack_seq;
-                    tcp->ack_seq = rx_seg + bpf_htonl(2);
-
+                    tcp->ack_seq = rx_seg + bpf_htonl(1);
+                    DEBUG_PRINT("TC:ACK seg = %d, ack = %d\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
 
                     tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
                     tcp_csum = bpf_csum_diff(&rx_seg, 4, &tcp->ack_seq, 4, tcp_csum);
