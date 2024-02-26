@@ -128,13 +128,20 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     __u32 tcp_old_flag = *ptr;
                     tcp->syn = 0;tcp->ack = 1;
                     __u32 tcp_new_flag = *ptr;
-                    tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
-                    tcp->check = csum_fold_helper_64(tcp_csum);
                     
+
                     tcp->source ^= tcp->dest;
                     tcp->dest ^= tcp->source;
                     tcp->source ^= tcp->dest;
 
+                    tcp->seq ^= tcp->ack_seq;
+                    tcp->ack_seq ^= tcp->seq;
+                    tcp->seq ^= tcp->ack_seq;
+                    tcp->seq += bpf_htonl(1);
+
+                    tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
+                    tcp_csum += bpf_htonl(1);
+                    tcp->check = csum_fold_helper_64(tcp_csum);
 
                     // Swap tsval and tsecr. Do we need to change the ts order to NOP NOP TS ?   
                     ts->tsval ^= ts->tsecr;
