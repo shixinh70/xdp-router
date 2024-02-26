@@ -142,16 +142,21 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     // tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
                     // tcp_csum = bpf_csum_diff(&rx_seg, 4, &tcp->ack_seq, 4, tcp_csum);
                     // tcp->check = csum_fold_helper_64(tcp_csum) ;
-                    tcp->check = 0;
-                    __u64 tcp_csum_tmp = 0;
-                    if(((void*)tcp)+ 36 > data_end) return XDP_DROP;
-                    ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 36 bytes
-                    tcp->check = tcp_csum_tmp;
+                    
 
                     // Swap tsval and tsecr. Do we need to change the ts order to NOP NOP TS ?   
                     ts->tsval ^= ts->tsecr;
                     ts->tsecr ^= ts->tsval;
                     ts->tsval ^= ts->tsecr;
+
+                    tcp->check = 0;
+                    DEBUG_PRINT ("TC:SYNACK packet ingress! csum = %x\n",bpf_ntohs(tcp->check));
+
+                    __u64 tcp_csum_tmp = 0;
+                    if(((void*)tcp)+ 36 > data_end) return XDP_DROP;
+                    ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 36 bytes
+                    tcp->check = tcp_csum_tmp;
+
 
                     // Swap mac.
                     struct eth_mac_t mac_tmp;
