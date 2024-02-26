@@ -52,7 +52,8 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
         int ip_proto = parse_iphdr(&cur, data_end, &ip);
         if(ip_proto == -1) return XDP_DROP;
         if(ip_proto == IPPROTO_TCP){
-            
+            DEBUG_PRINT("SERVER_IN: TCP packet (with options) ingress\n");
+        
             int tcphdr_len = parse_tcphdr(&cur, data_end, &tcp);
             if(tcphdr_len == -1) return XDP_DROP;
             if(tcphdr_len >= 32){ // Timestamp need 12 byte (Nop Nop timestamp)
