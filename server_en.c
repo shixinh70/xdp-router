@@ -107,6 +107,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                 // Swap ip address, port, timestamp, mac. and conver it to ack.
                 if(tcp->ack && tcp->syn){
 
+
                     // Modify delta (need to check the byte order problem)
                     val.delta -= (tcp->ack_seq + (bpf_htonl(1)));
 
@@ -118,7 +119,10 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     ip->daddr ^= ip->saddr;
                     ip->saddr ^= ip->daddr;
 
-                    // Swap port 
+                    // Swap port and convert to ack packet
+
+                    tcp->syn = 0;
+                    tcp->ack = 1;
                     tcp->source ^= tcp->dest;
                     tcp->dest ^= tcp->source;
                     tcp->source ^= tcp->dest;
