@@ -390,5 +390,39 @@ static inline __u32 parse_ack_timestamp(struct hdr_cursor *nh,
     return opt_ts_offset;
 }
 
+static inline __u32 parse_synack_timestamp(struct hdr_cursor *nh,
+									void *data_end,
+									struct tcp_opt_ts **tshdr) {
+	struct tcp_opt_ts* ts;
+    int opt_ts_offset = -1;
+    //void* l4hdr = (data + sizeof(strct ethhdr))
+    __u64* tcp_opt_64 = nh->pos;
+	if(tcp_opt_64 + 1 > data_end){
+        DEBUG_PRINT("Drop at parse_ack_timestamp\n");
+		return -1;
+	}
 
+    // Mask: MSS(4B), SackOK(2B), Timestamp(1B)
+    if((ack_1_mask & *tcp_opt_64) == ack_1_mask){
+        DEBUG_PRINT("Match NOP, NOP, Timestamp\n");
+        opt_ts_offset = 2;
+        // ts = (struct tcp_opt_ts*)(l4hdr + 20 + 6);
+        // if((void*)ts + sizeof(struct tcp_opt_ts) > data_end) return -1;
+        // rx_tsval = ts->tsval;
+    }
+	else{
+		DEBUG_PRINT("Slow path match timestamp\n");
+	}
+
+	nh->pos += opt_ts_offset;
+	if(nh->pos + opt_ts_offset > data_end) return -1;
+	ts = nh->pos;
+	if(ts + 1 > data_end){
+        DEBUG_PRINT("Drop at parse_ack_timestamp\n");
+		return -1;
+	} 
+	nh->pos = ts + 1;
+	*tshdr = ts;
+    return opt_ts_offset;
+}
 #endif // ROUTER_H

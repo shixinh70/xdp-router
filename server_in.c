@@ -30,6 +30,7 @@ struct {
         __uint(max_entries, MAX_ENTRY);
         __type(key, struct map_key_t);
         __type(value, struct map_val_t);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
 } conntrack_map SEC(".maps");
 
 // main router logic
@@ -80,9 +81,12 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         // if(val == NULL) DEBUG_PRINT("No connection in conntrack_map, create new one\n");
                         // else DEBUG_PRINT("Find connection in conntrack_map, update old one\n");
                         // Update and Create val are same function;
+                        // Then store the ack for compute ack delta.
                         struct map_val_t val = {.delta = tcp->ack_seq,
                                                 .ts_val_s = ts->tsval};
+                                         
                         bpf_map_update_elem(&conntrack_map, &key, &val, BPF_ANY);
+
                         // Change ACK packet to SYN packet (seq = seq -1 , ack = 0, tsecr = 0);
                         // Store some message for compute TCP csum
                         __u32 old_tcp_seq = tcp->seq;
@@ -91,13 +95,13 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         __u32 old_tcp_tsecr = ts->tsecr;
                         __u32* ptr ; 
                         ptr = ((void*)tcp) + 12;
-                        DEBUG_PRINT("ffddd\n");
+                       
 
                         // if(((void*)tcp) + 12 > data_end) return XDP_DROP;
                         // DEBUG_PRINT("ffffffff\n");
 
                         if((void*)ptr + 4 > data_end) return XDP_DROP;
-                        DEBUG_PRINT("asdasd\n");
+                       
                         __u32 tcp_old_flag = *ptr;
 
                         tcp->ack = 0;tcp->syn = 1;
