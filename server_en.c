@@ -136,12 +136,12 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
 
                     __u32 rx_seg = tcp->seq;
                     tcp->seq = tcp->ack_seq;
-                    tcp->ack_seq = rx_seg ;
+                    tcp->ack_seq = rx_seg + bpf_htonl(2);
 
 
                     tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
                     tcp_csum = bpf_csum_diff(&rx_seg, 4, &tcp->ack_seq, 4, tcp_csum);
-                    tcp->check = csum_fold_helper_64(tcp_csum) - bpf_htons(1);
+                    tcp->check = csum_fold_helper_64(tcp_csum) ;
                     
 
                     // Swap tsval and tsecr. Do we need to change the ts order to NOP NOP TS ?   
