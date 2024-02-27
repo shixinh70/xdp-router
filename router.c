@@ -153,7 +153,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                 else if(tcp->syn && tcp->ack){
                     DEBUG_PRINT("Router:  SYNACK packet ingress, Foward\n");
                 }   
-                else if(tcp->ack && !tcp->syn){
+                else if(tcp->ack && (!tcp->syn)){
                     DEBUG_PRINT("Router:  ACK packet ingress\n");
                     struct tcp_opt_ts* ts;
                     
@@ -184,7 +184,6 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                 }
                 else{
                     DEBUG_PRINT("Router: Other packet ingress, Foward\n");
-                    
 
                 }
             
@@ -212,7 +211,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
 forward:
     fib_params.ifindex = ctx->ingress_ifindex;
     rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
-    DEBUG_PRINT("Router: Foward to interface_%d\n",rc);
+    DEBUG_PRINT("Router: Foward to interface_%d\n",fib_params.ifindex);
     switch(rc) {
         case BPF_FIB_LKUP_RET_SUCCESS:
             DEBUG_PRINT("Router: Success\n");

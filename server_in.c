@@ -62,7 +62,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
             // This parse timestamp may can be optimize
             // Switch agent have parse the timestamp so can put the ts type
             // in some un-used header field.
-                if(tcp->ack && (!tcp->syn)){
+                if(tcp->ack && (!tcp->syn) && (!tcp->ece)){
                     int opt_ts_offset = parse_ack_timestamp(&cur,data_end,&ts);
                     if(opt_ts_offset == -1) return XDP_DROP;   
                     __u32 tsecr = bpf_ntohl(ts->tsecr);
@@ -125,7 +125,23 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                                     \n");
                     }
                 }
+                else if(tcp->ack && tcp->ece){
+
+                    
+                    __u64 tcp_csum = tcp->check;
+                    __u32* ptr ; 
+
+                    ptr = ((void*)tcp) + 12;
+                    if((void*)ptr + 4 > data_end) return XDP_DROP;
+            
+                    __u32 tcp_old_flag = *ptr;
+                    tcp->ece = 0;
+                    __u32 tcp_new_flag = *ptr;
+                    DEBUG_PRINT("SERVER_IN: ACK ECE redirect back to server_in, csum = %x\n",bpf_ntohs(tcp->check));
+                    tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
+                    tcp->check = csum_fold_helper_64(tcp_csum);
                 
+                }
             
             }
             else{

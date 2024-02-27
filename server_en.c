@@ -68,7 +68,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
 
             int tcphdr_len = parse_tcphdr(&cur, data_end, &tcp);
             if(tcphdr_len == -1) return TC_ACT_SHOT;
-            if(tcphdr_len >= 32){ // Timestamp need 12 byte (Nop Nop timestamp)
+            if(tcphdr_len >= 32 && !(tcp->ece)){ // Timestamp need 12 byte (Nop Nop timestamp)
             struct tcp_opt_ts* ts;
             DEBUG_PRINT("TC:TCP packet (with options) ingress\n");
 
@@ -126,7 +126,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     if((void*)ptr + 4 > data_end) return TC_ACT_SHOT;
                        
                     __u32 tcp_old_flag = *ptr;
-                    tcp->syn = 0;tcp->ack = 1;
+                    tcp->syn = 0;tcp->ack = 1;tcp->ece = 1;
                     __u32 tcp_new_flag = *ptr;
                     
 
@@ -135,14 +135,17 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     tcp->source ^= tcp->dest;
                     DEBUG_PRINT("TC:SYNACK seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
                     __u32 rx_seg = tcp->seq;
+                    __u32 rx_ack = tcp->ack_seq;
                     tcp->seq = tcp->ack_seq;
                     tcp->ack_seq = rx_seg + bpf_htonl(1);
                     DEBUG_PRINT("TC:ACK seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
 
-                    tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
-                    tcp_csum = bpf_csum_diff(&rx_seg, 4, &tcp->ack_seq, 4, tcp_csum);
-                    __u16 tcp_csum_16 = csum_fold_helper_64(tcp_csum) ;
-                    tcp->check = tcp_csum_16;
+                    // tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
+                    // tcp_csum = bpf_csum_diff(&rx_seg, 4, &tcp->seq, 4, tcp_csum);
+                    // tcp_csum = bpf_csum_diff(&rx_ack, 4, &tcp->ack_seq, 4, tcp_csum);
+                    // __u16 tcp_csum_16 = csum_fold_helper_64(tcp_csum) ;
+                    // DEBUG_PRINT("%x\n",bpf_htonl(tcp_csum_16));
+                    // tcp->check = tcp_csum_16;
                     
 
                     // Swap tsval and tsecr. Do we need to change the ts order to NOP NOP TS ?   
@@ -155,15 +158,15 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     // __u64 tcp_csum_tmp = 0;
                     // if(((void*)tcp)+ 36 > data_end) return XDP_DROP;
                     // ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 36 bytes
-                    DEBUG_PRINT ("TC:SYNACK TO ACK! csum = %x\n",bpf_ntohs(tcp_csum_16));
-
+                    // DEBUG_PRINT("TC:SYNACK TO ACK! csum = %x\n",bpf_ntohs(tcp_csum_tmp));
+                    // tcp->check = tcp_csum_tmp;
+                    
                     // Swap mac.
                     struct eth_mac_t mac_tmp;
                     __builtin_memcpy(&mac_tmp, eth->h_source, 6);
                     __builtin_memcpy(eth->h_source, eth->h_dest, 6);
                     __builtin_memcpy(eth->h_dest, &mac_tmp, 6);
-                    
-                    //bpf_skb_store_bytes(skb, sizeof(*eth) + )
+                    return bpf_redirect(37,BPF_F_INGRESS);
                 }
                 
             
