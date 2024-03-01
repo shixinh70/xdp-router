@@ -18,7 +18,7 @@
 #define ROUTER_H
 #define DEBUG 1
 #define DEBUG_PRINT(fmt, ...) if (DEBUG) bpf_printk(fmt, ##__VA_ARGS__)
-#define TS_START 90909090
+#define TS_START 1
 #define MAX_TRUNK_VLANS 8
 #define MAX_IFACES 16
 #define SIPROUND \
@@ -159,7 +159,8 @@ static __always_inline __u32 get_hash(__u32 src, __u32 dst, __u16 src_port, __u1
 	SIPROUND;
 
 	__u32 hash = (v0^v1)^(v2^v3);
-        return hash; 	
+	hash %= bpf_htonl(0x80000000);
+    return hash; 	
 }
 static __always_inline __u32 get_hash_2(__u32 src, __u32 dst, __u16 src_port, __u16 dst_port ){
 	

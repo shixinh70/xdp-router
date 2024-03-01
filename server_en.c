@@ -68,17 +68,28 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
 
             int tcphdr_len = parse_tcphdr(&cur, data_end, &tcp);
             if(tcphdr_len == -1) return TC_ACT_SHOT;
-            if(tcphdr_len >= 32 && !(tcp->ece)){ // Timestamp need 12 byte (Nop Nop timestamp)
-            struct tcp_opt_ts* ts;
-            DEBUG_PRINT("TC:TCP packet (with options) ingress\n");
+            if(DEBUG){
+                __u16* ptr ; 
+                ptr = ((void*)tcp) + 12;
+                if((void*)ptr + 4 > data_end) return XDP_DROP;
+                __u16 tcp_old_flag = *ptr;
+                tcp_old_flag = bpf_ntohs(tcp_old_flag);
+                tcp_old_flag &= 0x00ff;
+                
+                DEBUG_PRINT("TC: TCP packet in, seq = %u, ack = %u, ", bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+                DEBUG_PRINT("flag = %u, opt_len = %u\n", tcp_old_flag, tcp->doff * 4);
+            }
+            
+
+            if(tcphdr_len >= 32){ // Timestamp need 12 byte (Nop Nop timestamp)
+            
+            //DEBUG_PRINT("TC: TCP packet (with options) ingress\n");
 
             // This parse timestamp may can be optimize
             // Switch agent have parse the timestamp so can put the ts type
             // in some un-used header field.
             // TODO: Finish parse_synack.
-
-            int opt_ts_offset = parse_synack_timestamp(&cur,data_end,&ts);
-            if(opt_ts_offset == -1) return TC_ACT_SHOT;
+            
             
             // Find pin_map (key = 4 turple); Q: key's order?
             struct map_key_t key = {
@@ -90,15 +101,15 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
             struct map_val_t val;
             struct map_val_t* val_p = bpf_map_lookup_elem(&conntrack_map,&key);
             if(val_p) {
-                DEBUG_PRINT ("TC:Connection exist in map!\n");
+                DEBUG_PRINT ("TC: Connection exist in map!\n");
             }
             else {
-                DEBUG_PRINT ("TC:Connection not exist in map!\n");
+                DEBUG_PRINT ("TC: Connection not exist in map!\n");
                 
             }
             // Read val from pinned map;
             if( bpf_probe_read_kernel(&val,sizeof(val),val_p) != 0){
-                DEBUG_PRINT ("TC:Read map_val fail!\n");
+                DEBUG_PRINT ("TC: Read map_val fail!\n");
                 return TC_ACT_SHOT;
             }
             
@@ -106,14 +117,21 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                 // if SYN-ACK packet (from server)
                 // Swap ip address, port, timestamp, mac. and conver it to ack.
                 if(tcp->ack && tcp->syn){
-                    DEBUG_PRINT ("TC:SYNACK packet ingress! csum = %x\n",bpf_ntohs(tcp->check));
 
+                    struct tcp_opt_ts* ts;
+                    int opt_ts_offset = parse_synack_timestamp(&cur,data_end,&ts);
+                    if(opt_ts_offset == -1) return TC_ACT_SHOT;
+
+                    //DEBUG_PRINT ("TC: SYNACK packet ingress! csum = %x\n",bpf_ntohs(tcp->check));
+                    DEBUG_PRINT("TC: Update delta = detla(%u) - SYNACK's seg(%u) - 1= %u\n", val.delta, bpf_htonl(tcp->seq) ,val.delta - (tcp->seq + (bpf_htonl(1))));
                     // Modify delta (need to check the byte order problem)
-                    val.delta -= (tcp->ack_seq + (bpf_htonl(1)));
-                    DEBUG_PRINT("TC:Update delta = %u\n", bpf_htonl(val.delta));
+                    
+                    val.delta = val.delta - bpf_ntohl(tcp->seq) - 1;
+                    val.ts_val_s = ts->tsval;
+
                     //BPF_EXIST will update an existing element (may have bug)
                     bpf_map_update_elem(&conntrack_map,&key,&val,BPF_EXIST);
-
+                    tcp->window = bpf_htons(0x1F6);
                     // Swap ip
                     ip->saddr ^= ip->daddr;
                     ip->daddr ^= ip->saddr;
@@ -125,20 +143,25 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     ptr = ((void*)tcp) + 12;
                     if((void*)ptr + 4 > data_end) return TC_ACT_SHOT;
                        
-                    __u32 tcp_old_flag = *ptr;
-                    tcp->syn = 0;tcp->ack = 1;tcp->ece = 1;
-                    __u32 tcp_new_flag = *ptr;
+                    // __u32 tcp_old_flag = *ptr;
+                    // tcp->syn = 0;tcp->ack = 1;tcp->ece = 1;
+                    // __u32 tcp_new_flag = *ptr;
                     
 
                     tcp->source ^= tcp->dest;
                     tcp->dest ^= tcp->source;
                     tcp->source ^= tcp->dest;
-                    DEBUG_PRINT("TC:SYNACK seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+                    //DEBUG_PRINT("TC: SYNACK seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+                    
                     __u32 rx_seg = tcp->seq;
                     __u32 rx_ack = tcp->ack_seq;
-                    tcp->seq = tcp->ack_seq;
-                    tcp->ack_seq = rx_seg + bpf_htonl(1);
-                    DEBUG_PRINT("TC:ACK seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+
+                    tcp->seq ^= tcp->ack_seq;
+                    tcp->ack_seq ^= tcp->seq;
+                    tcp->seq ^= tcp->ack_seq;
+
+                    tcp->ack_seq += bpf_htonl(1);
+                    //DEBUG_PRINT("TC: ACK seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
 
                     // tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
                     // tcp_csum = bpf_csum_diff(&rx_seg, 4, &tcp->seq, 4, tcp_csum);
@@ -148,31 +171,66 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                     // tcp->check = tcp_csum_16;
                     
 
-                    // Swap tsval and tsecr. Do we need to change the ts order to NOP NOP TS ?   
+                    // Swap tsval and tsecr. Do we need to change the ts order to NOP NOP TS ?
+                    
                     ts->tsval ^= ts->tsecr;
                     ts->tsecr ^= ts->tsval;
                     ts->tsval ^= ts->tsecr;
 
-                    // tcp->check = 0;
+                    tcp->check = 0;
 
-                    // __u64 tcp_csum_tmp = 0;
-                    // if(((void*)tcp)+ 36 > data_end) return XDP_DROP;
-                    // ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 36 bytes
-                    // DEBUG_PRINT("TC:SYNACK TO ACK! csum = %x\n",bpf_ntohs(tcp_csum_tmp));
-                    // tcp->check = tcp_csum_tmp;
+                    
                     
                     // Swap mac.
+                    // OS compute checksum after ts hook.
+                    // current tcp.check was wrong, so can't use incremental way to compute,
+                    // must recompute.
                     struct eth_mac_t mac_tmp;
                     __builtin_memcpy(&mac_tmp, eth->h_source, 6);
                     __builtin_memcpy(eth->h_source, eth->h_dest, 6);
                     __builtin_memcpy(eth->h_dest, &mac_tmp, 6);
+                    
+
+
+
+                    // Apache2 SYNACK len 40
+                    __u64 tcp_csum_tmp = 0;
+                    if(((void*)tcp)+ 36 > data_end){
+                        DEBUG_PRINT("TC: DROP!!! if(((void*)tcp)+ 40 > data_end)\n");
+                        return TC_ACT_SHOT;
+                    } 
+                    ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 40 bytes
+                    //DEBUG_PRINT("TC: SYNACK TO ACK! csum = %x\n",bpf_ntohs(tcp_csum_tmp));
+                    tcp->check = tcp_csum_tmp;
+                    
                     return bpf_redirect(37,BPF_F_INGRESS);
+                    
                 }
-                
-            
+                else if (tcp->rst){
+                    //DEBUG_PRINT("TC:  It's a Reset packet\n");
+                    tcp->seq = bpf_htonl(bpf_ntohl(tcp->seq) + val.delta);
+                    bpf_map_update_elem(&conntrack_map,&key,&val,BPF_EXIST);
+                }
+
+                // if ack packet (server's ack packet)
+                // update val.tsval = tsval
+                // tsval = cookie (from here, cookie not longer be TS_START, but cookie)
+                // Router use TS==cookie to validate ACK packet.
+                else {
+                    struct tcp_opt_ts* ts;
+                    int opt_ts_offset = parse_ack_timestamp(&cur,data_end,&ts);
+                    if(opt_ts_offset == -1) return TC_ACT_SHOT;
+                    val.ts_val_s = ts->tsval;
+                    ts->tsval = get_hash(ip->daddr,ip->saddr,tcp->dest,tcp->source);
+                    tcp->seq = bpf_htonl(bpf_ntohl(tcp->seq) + val.delta);
+                    bpf_map_update_elem(&conntrack_map,&key,&val,BPF_EXIST);
+                    
+                    DEBUG_PRINT ("TC: Send out ack packet seg = %u, ack = %u, delta = %u\n",
+                                bpf_ntohl(tcp->seq),bpf_ntohl(tcp->ack_seq), val.delta);
+                }
             }
             else{
-                DEBUG_PRINT("TC:No options TCP packet ingress, Foward\n");
+                //DEBUG_PRINT("TC: No options TCP packet ingress, Foward\n");
 
             }
         } 

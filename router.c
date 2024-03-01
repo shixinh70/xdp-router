@@ -42,29 +42,38 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
             
             int tcphdr_len = parse_tcphdr(&cur, data_end, &tcp);
             if(tcphdr_len == -1) return XDP_DROP;
-
+            if(DEBUG){
+                __u16* ptr ; 
+                ptr = ((void*)tcp) + 12;
+                if((void*)ptr + 4 > data_end) return XDP_DROP;
+                __u16 tcp_old_flag = *ptr;
+                tcp_old_flag = bpf_ntohs(tcp_old_flag);
+                tcp_old_flag &= 0x00ff;
+                //DEBUG_PRINT("Router: TCP packet (with options) ingress  , Foward\n"); 
+                DEBUG_PRINT("Router: TCP packet in, seq = %u, ack = %u, ", bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+                DEBUG_PRINT("flag = %u, IP_totlen = %u, tcphdr_len = %u\n", 
+                            tcp_old_flag, bpf_ntohs(ip->tot_len), tcp->doff * 4);
+            }
+            
             if(tcphdr_len >= 32){ // Timestamp need 12 byte (Nop Nop timestamp)
-            DEBUG_PRINT("Router: TCP packet (with options) ingress  , Foward\n");
-
                 if(tcp->syn && (!tcp->ack)) {
-
                 // SYN with no option (assume not happen)
                 // if happen, go bloomfilter way ?
-                
-                
                 // if has tcp option, check has tcptimestamp ?
                 // if yes, header shrink to 20 + sizeof(synack_opt_order_1);
                 // Then put cookie into Tsval.
                 // How to determine cookie ? Halfsiphash for every flow or predefine secret number? 
                 
-                    DEBUG_PRINT ("Router: Syn packet with option ingress\n");
+                    //DEBUG_PRINT ("Router: Syn packet with option ingress\n");
+                    //DEBUG_PRINT("Router:SYN seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+
                     struct tcp_opt_ts* ts;
                     __u32 rx_tsval = 0;
                     int opt_ts_offset = parse_syn_timestamp(&cur,data_end,&ts); 
                     if(opt_ts_offset == -1) return XDP_DROP;
                     // Store rx packet's Tsval (in order to put into Tsecr)
                     rx_tsval = ts->tsval;
-
+                    
                     // Store imformation before shrink
                     // IP
                     __u16 old_ip_csum = ip->check;
@@ -127,7 +136,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                     struct common_synack_opt* sa_opt = cur.pos;
                     if((sa_opt + 1) > data_end) return XDP_DROP;
                     
-                    sa_opt->MSS = 0xb4050402; //1460
+                    sa_opt->MSS = 0x18020402; //536
                     sa_opt->SackOK = 0x0204;
                     sa_opt->ts.kind = 8;
                     sa_opt->ts.length = 10;
@@ -149,49 +158,49 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                     if(((void*)tcp)+ 36 > data_end) return XDP_DROP;
                     ipv4_l4_csum(tcp, 36, &tcp_csum_tmp, ip); // Use fixed 36 bytes
                     tcp->check = tcp_csum_tmp;
+                    //DEBUG_PRINT("Router: SYNACK seg = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
                 }  
                 else if(tcp->syn && tcp->ack){
-                    DEBUG_PRINT("Router:  SYNACK packet ingress, Foward\n");
+                    //DEBUG_PRINT("Router:  SYNACK packet ingress, Foward\n");
                 }   
                 else if(tcp->ack && (!tcp->syn)){
-                    DEBUG_PRINT("Router:  ACK packet ingress\n");
+                    //DEBUG_PRINT("Router:  ACK packet ingress\n");
                     struct tcp_opt_ts* ts;
                     
                     __u32 cookie = get_hash(ip->saddr, ip->daddr, tcp->source, tcp->dest);
                     int opt_ts_offset = parse_ack_timestamp(&cur,data_end,&ts); 
                     if(opt_ts_offset == -1) return XDP_DROP;
                     if(ts->tsecr == bpf_htonl(TS_START)){
-                        DEBUG_PRINT("Router: ACK packet with tsecr == TS_START ingress\n");
+                        DEBUG_PRINT("Router: Packet tsecr == TS_START\n");
                         __u32 rx_ack = tcp->ack_seq;
                         if(rx_ack - bpf_htonl(1) == cookie){
-                            DEBUG_PRINT ("Router: ACK packet with TS_START pass ACK cookie check!\n");
+                            DEBUG_PRINT ("Router: Packet pass ACK cookie check!\n");
                         }
                         else{
-                            DEBUG_PRINT ("Router: ACK packet with TS_START fail ACK cookie check!\n");
+                            DEBUG_PRINT ("Router: Packet fail ACK cookie check!\n");
                             return XDP_DROP;
                         }
                     }
                     else{
-                        DEBUG_PRINT("Router: ACK packet with tsecr != TS_START ingress!\n");
+                        DEBUG_PRINT("Router: Packet tsecr != TS_START !\n");
                         if(ts->tsecr == cookie){
-                            DEBUG_PRINT ("Router: ACK packet pass Timestamp cookie!\n");
+                            DEBUG_PRINT ("Router: Packet pass Timestamp cookie!\n");
                         }
                         else{
-                            DEBUG_PRINT ("Router: ACK packet fail Timestamp cookie!\n");
+                            DEBUG_PRINT ("Router: Packet fail Timestamp cookie!\n");
                             return XDP_DROP;
                         }
                     }
+
                 }
                 else{
-                    DEBUG_PRINT("Router: Other packet ingress, Foward\n");
+                    //DEBUG_PRINT("Router: Other packet ingress, Foward\n");
 
                 }
             
             }
             else{
-                DEBUG_PRINT("Router: No options TCP packet ingress, Foward\n");
-                
-
+                //DEBUG_PRINT("Router: No options TCP packet ingress, Foward\n");
             }
         } 
         if (ip->ttl <= 1) return XDP_PASS;        

@@ -56,22 +56,37 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
         
             int tcphdr_len = parse_tcphdr(&cur, data_end, &tcp);
             if(tcphdr_len == -1) return XDP_DROP;
+
+            if(DEBUG){
+                __u16* ptr ; 
+                ptr = ((void*)tcp) + 12;
+                if((void*)ptr + 4 > data_end) return XDP_DROP;
+                __u16 tcp_old_flag = *ptr;
+                tcp_old_flag = bpf_ntohs(tcp_old_flag);
+                tcp_old_flag &= 0x00ff;
+                DEBUG_PRINT("SERVER_IN:  TCP packet in, seq = %u, ack = %u, ", bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+                DEBUG_PRINT("flag = %u, IP_totlen = %u, tcphdr_len = %u\n", 
+                            tcp_old_flag, bpf_ntohs(ip->tot_len), tcp->doff * 4);
+            }
+            
+            
+            
             if(tcphdr_len >= 32){ // Timestamp need 12 byte (Nop Nop timestamp)
             struct tcp_opt_ts* ts;
-            DEBUG_PRINT("SERVER_IN: TCP packet (with options) ingress\n");
+            //DEBUG_PRINT("SERVER_IN: TCP packet (with options) ingress\n");
             // This parse timestamp may can be optimize
             // Switch agent have parse the timestamp so can put the ts type
             // in some un-used header field.
-                if(tcp->ack && (!tcp->syn) && (!tcp->ece)){
+                if(tcp->ack && (!tcp->syn)){
                     int opt_ts_offset = parse_ack_timestamp(&cur,data_end,&ts);
                     if(opt_ts_offset == -1) return XDP_DROP;   
                     __u32 tsecr = bpf_ntohl(ts->tsecr);
                     void* tcp_header_end = (void*)tcp + (tcp->doff*4);
                     if(tcp_header_end > data_end) return XDP_DROP;
-                    // Ack packet which TS == TS_START and no payload.
+                    // Ack packet which TS == TS_START and no payload (Pass router's cookie check).
                     // Insert new connection 
                     if (tsecr == TS_START && (tcp_header_end == data_end)){
-                        DEBUG_PRINT("SERVER_IN: Ack packet tsecr == TS_START, and NO payload, Create conntrack--\n");
+                        DEBUG_PRINT("SERVER_IN: Packet tsecr == TS_START, and NO payload, Create conntrack\n");
                         struct map_key_t key = {
                             .src_ip = ip->saddr,
                             .dst_ip = ip->daddr,
@@ -83,11 +98,11 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         // else DEBUG_PRINT("Find connection in conntrack_map, update old one\n");
                         // Update and Create val are same function;
                         // Then store the ack for compute ack delta.
-                        struct map_val_t val = {.delta = tcp->ack_seq,
+                        struct map_val_t val = {.delta = bpf_ntohl(tcp->ack_seq),
                                                 .ts_val_s = ts->tsval};
                                          
                         bpf_map_update_elem(&conntrack_map, &key, &val, BPF_ANY);
-
+                        DEBUG_PRINT("SERVER_IN: Update delta = %u\n",val.delta);
                         // Change ACK packet to SYN packet (seq = seq -1 , ack = 0, tsecr = 0);
                         // Store some message for compute TCP csum
                         __u32 old_tcp_seq = tcp->seq;
@@ -120,12 +135,48 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         tcp->check = csum_fold_helper_64(tcp_csum);
 
                     }
+                    // Packet for transmit data (payload != 0)
                     else{
-                        DEBUG_PRINT("SERVER_IN: Ack packet tsecr != TS_START, and NO payload\n \
-                                    \n");
+                        DEBUG_PRINT("SERVER_IN: Packet is not used for create connection\n");
+                        
+                        // Find pin_map (key = 4 turple); Q: key's order?
+                        struct map_key_t key = {
+                                .src_ip = ip->saddr,
+                                .dst_ip = ip->daddr,
+                                .src_port = tcp->source,
+                                .dst_port = tcp->dest
+                            };
+                        struct map_val_t val;
+                        struct map_val_t* val_p = bpf_map_lookup_elem(&conntrack_map,&key);
+                        if(val_p) {
+                            DEBUG_PRINT ("SERVER_IN: Connection exist in map!\n");
+                        }
+                        else {
+                            DEBUG_PRINT ("SERVER_IN: Connection not exist in map!\n");
+                            
+                        }
+                        // Read val from pinned map;
+                        if( bpf_probe_read_kernel(&val,sizeof(val),val_p) != 0){
+                            DEBUG_PRINT ("SERVER_IN: Read map_val fail!\n");
+                            return XDP_DROP;
+                        }
+
+                        __u32 rx_ack_seq = tcp->ack_seq;
+                        __u32 rx_tsecr = ts->tsecr;
+                        __u64 tcp_csum = tcp->check;
+                        tcp->ack_seq = bpf_htonl(bpf_ntohl(tcp->ack_seq) - val.delta);
+                        ts->tsecr = val.ts_val_s;
+                        DEBUG_PRINT("SERVER_IN: Packet (after ack -= delta) seq = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+                        tcp_csum = bpf_csum_diff(&rx_ack_seq, 4, &tcp->ack_seq, 4, ~tcp_csum);
+                        tcp_csum = bpf_csum_diff(&rx_tsecr, 4, &ts->tsecr, 4, tcp_csum);
+                        tcp->check = csum_fold_helper_64(tcp_csum);
+                        
                     }
                 }
-                else if(tcp->ack && tcp->ece){
+
+                // if synack at server_in, must be redirect synack from server_en
+                // conver to ack packet.
+                else if(tcp->ack && tcp->syn){
 
                     
                     __u64 tcp_csum = tcp->check;
@@ -135,17 +186,18 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                     if((void*)ptr + 4 > data_end) return XDP_DROP;
             
                     __u32 tcp_old_flag = *ptr;
-                    tcp->ece = 0;
+                    tcp->syn = 0;
                     __u32 tcp_new_flag = *ptr;
-                    DEBUG_PRINT("SERVER_IN: ACK ECE redirect back to server_in, csum = %x\n",bpf_ntohs(tcp->check));
+                    DEBUG_PRINT("SERVER_IN: SYN ACK redirect back to server_in, conver it to ack\n");
                     tcp_csum = bpf_csum_diff(&tcp_old_flag, 4, &tcp_new_flag, 4, ~tcp_csum);
                     tcp->check = csum_fold_helper_64(tcp_csum);
+                    
                 
                 }
             
             }
             else{
-                DEBUG_PRINT("SERVER_IN: No options TCP packet ingress, Foward\n");
+                //DEBUG_PRINT("SERVER_IN: No options TCP packet ingress, Foward\n");
 
             }
         } 
