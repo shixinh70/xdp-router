@@ -21,6 +21,7 @@
 #define TS_START 1
 #define MAX_TRUNK_VLANS 8
 #define MAX_IFACES 16
+#define MAX_TCP_OPTION 10
 #define SIPROUND \
 	do { \
 	v0 += v1; v2 += v3; v1 = rol(v1, 5); v3 = rol(v3,8); \
@@ -36,7 +37,7 @@ const int c1 = 0x6e646f6d;
 const int c2 = 0x6e657261;
 const int c3 = 0x79746573;
 
-
+//SYN
 //MSS, SackOk, Timestamp
 const __u64 syn_1_mask = 0x0008000400000002;
 // MSS, NOP, WScale, NOP, NOP, Timestamp
@@ -47,8 +48,22 @@ const __u32 syn_2_mask_2 = 0x08010100;
 const __u64 syn_3_mask_1 = 0x0000070100000002;
 const __u32 syn_3_mask_2 = 0x08000400;
 
+//ACK
 //NOP NOP Timstamp
 const __u64 ack_1_mask = 0x000000000080101;
+
+//SYNACK
+//MSS SackOk, Timestamp
+const __u64 synack_1_mask = ack_1_mask;
+//MSS NOP Wscale SackOk Timestamp
+const __u64 synack_2_mask_1 = syn_2_mask_1;
+const __u32 synack_2_mask_2 = syn_3_mask_2;
+//MSS NOP NOP Timestamp 
+const __u64 synack_3_mask = 0x0008010100000004;
+//MSS NOP WScale NOP NOP Timestamp
+const __u64 synack_4_mask_1 = syn_2_mask_1;
+const __u32 synack_4_mask_2 = syn_2_mask_2;
+
 
 struct tcp_opt_ts {
     __u8 kind;      
@@ -295,65 +310,190 @@ static __always_inline int parse_tcphdr(struct hdr_cursor *nh,
 	return len;
 }
 
-static inline __u32 parse_syn_timestamp(struct hdr_cursor *nh,
+static inline __u32 parse_timestamp(struct hdr_cursor *nh,
+									struct tcphdr* tcp, 
 									void *data_end,
 									struct tcp_opt_ts **tshdr) {
 	struct tcp_opt_ts* ts;
     int opt_ts_offset = -1;
+	int found = 0;
     //void* l4hdr = (data + sizeof(strct ethhdr))
     __u64* tcp_opt_64 = nh->pos;
+	DEBUG_PRINT("Parsing timestamp offset...\n");
 	if(tcp_opt_64 + 1 > data_end){
-        DEBUG_PRINT("Drop at parse_syn_timestamp\n");
+		DEBUG_PRINT("Drop at parse_syn_timestamp\n");
 
 		return -1;
 	}
-
-    // Mask: MSS(4B), SackOK(2B), Timestamp(1B)
-    if((syn_1_mask & *tcp_opt_64) == syn_1_mask){
-        DEBUG_PRINT("Match Mss, SackOK, Timestamp\n");
-        opt_ts_offset = 6;
-        // ts = (struct tcp_opt_ts*)(l4hdr + 20 + 6);
-        // if((void*)ts + sizeof(struct tcp_opt_ts) > data_end) return -1;
-        // rx_tsval = ts->tsval;
-    }
-
-	else{
-		nh->pos += 8;
-		__u32* tcp_opt_32 = nh->pos;
-		if(tcp_opt_32 + 1 > data_end){
-        	DEBUG_PRINT("Drop at parse_syn_timestamp\n");
-			return -1;
+	
+	if(tcp->syn && !tcp->ack){
+		// Mask: MSS(4B), SackOK(2B), Timestamp(1B)
+		if((syn_1_mask & *tcp_opt_64) == syn_1_mask){
+			DEBUG_PRINT("Match Mss, SackOK, Timestamp\n");
+			found = 1;
+			opt_ts_offset = 6;
+			// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 6);
+			// if((void*)ts + sizeof(struct tcp_opt_ts) > data_end) return -1;
+			// rx_tsval = ts->tsval;
 		}
-		if((syn_2_mask_1 & *tcp_opt_64) == syn_2_mask_1){
-			if((syn_2_mask_2 & *tcp_opt_32) == syn_2_mask_2){
-				DEBUG_PRINT("Match MSS, NOP, WScale, NOP, NOP, Timestamp\n");
-				opt_ts_offset = 2;
-				// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 10);
-			}  
-   		}
-		else if((syn_3_mask_1 & *tcp_opt_64) == syn_3_mask_1){
-			if((syn_3_mask_2 & *tcp_opt_32) == syn_3_mask_2){
-				DEBUG_PRINT("Match // MSS, NOP, WScale, SAckOK, Timestamp\n");
-				opt_ts_offset = 2;
-				// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 10);
-			}  
+		// Mask: Nop Nop TS (For testing hping3's Timestamp option, not common in real world)
+		// else if((ack_1_mask & *tcp_opt_64) == ack_1_mask){
+		//     DEBUG_PRINT("Match NOP, NOP, Timestamp\n");
+		//     opt_ts_offset = 2;
+		//     // ts = (struct tcp_opt_ts*)(l4hdr + 20 + 6);
+		//     // if((void*)ts + sizeof(struct tcp_opt_ts) > data_end) return -1;
+		//     // rx_tsval = ts->tsval;
+		// }
+
+		else{
+			//nh->pos += 8;
+			__u32* tcp_opt_32 = nh->pos + 8;
+			if(tcp_opt_32 + 1 > data_end){
+				DEBUG_PRINT("Drop at parse_syn_timestamp\n");
+				return -1;
+			}
+			if((syn_2_mask_1 & *tcp_opt_64) == syn_2_mask_1){
+				if((syn_2_mask_2 & *tcp_opt_32) == syn_2_mask_2){
+					DEBUG_PRINT("Match MSS, NOP, WScale, NOP, NOP, Timestamp\n");
+					opt_ts_offset = 10;
+					found = 1;
+
+					// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 10);
+				}  
+			}
+			else if((syn_3_mask_1 & *tcp_opt_64) == syn_3_mask_1){
+				if((syn_3_mask_2 & *tcp_opt_32) == syn_3_mask_2){
+					DEBUG_PRINT("Match // MSS, NOP, WScale, SAckOK, Timestamp\n");
+					opt_ts_offset = 10;
+					found = 1;
+					// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 10);
+				}  
+			}
+		}
+		
+	}
+	if(tcp->ack && !tcp->syn){
+		if((ack_1_mask & *tcp_opt_64) == ack_1_mask){
+			DEBUG_PRINT("Match NOP, NOP, Timestamp\n");
+			opt_ts_offset = 2;
+			found = 1;
+
+			// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 6);
+			// if((void*)ts + sizeof(struct tcp_opt_ts) > data_end) return -1;
+			// rx_tsval = ts->tsval;
+		}
+		// else{
+		// 	DEBUG_PRINT("Slow path match timestamp\n");
+		// }
+	}
+	if(tcp->syn && tcp->ack){
+		if((synack_1_mask & *tcp_opt_64) == synack_1_mask){
+			DEBUG_PRINT("Match SackOk, Timestamp\n");
+			found = 1;
+			opt_ts_offset = 2;
+			// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 6);
+			// if((void*)ts + sizeof(struct tcp_opt_ts) > data_end) return -1;
+			// rx_tsval = ts->tsval;
     	}
-		else {
-			DEBUG_PRINT("Slow path match timestamp\n");
-			
+		else{
+			//nh->pos += 8;
+			__u32* tcp_opt_32 = nh->pos + 8;
+			if(tcp_opt_32 + 1 > data_end){
+				DEBUG_PRINT("Drop at parse_syn_timestamp\n");
+				return -1;
+			}
+			if((synack_2_mask_1 & *tcp_opt_64) == synack_2_mask_1){
+				if((synack_2_mask_2 & *tcp_opt_32) == synack_2_mask_2){
+					DEBUG_PRINT("Match MSS NOP WScale SackOK Timestamp\n");
+					opt_ts_offset = 10;
+					found = 1;
+
+					// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 10);
+				}  
+			}
+			else if((synack_3_mask & *tcp_opt_64) == synack_3_mask){
+				if((syn_3_mask_2 & *tcp_opt_32) == syn_3_mask_2){
+					DEBUG_PRINT("Match MSS NOP NOP Timestamp\n");
+					opt_ts_offset = 6;
+					found = 1;
+					// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 10);
+				}  
+			}
+			else if((synack_4_mask_1 & *tcp_opt_64) == synack_4_mask_1){
+				if((synack_4_mask_2 & *tcp_opt_32) == synack_4_mask_2){
+					DEBUG_PRINT("Match MSS NOP WScale NOP NOP Timestamp\n");
+					opt_ts_offset = 10;
+					found = 1;
+					// ts = (struct tcp_opt_ts*)(l4hdr + 20 + 10);
+				}  
+			}
 		}
 	}
-	nh->pos += opt_ts_offset;
-		if(nh->pos + opt_ts_offset > data_end) return -1;
-		ts = nh->pos;
-		if(ts + 1 > data_end){
-			return -1;
-		} 
-		nh->pos = ts + 1;
-		*tshdr = ts;
 
-    return opt_ts_offset;
+	if(!found){
+		DEBUG_PRINT("Slow path match timestamp\n");
+		__u8* opt = (void*)(tcp + 1);
+		void* opt_end = (void*) tcp + (tcp->doff * 4);
+		volatile __u8 opt_len;
+		
+		#pragma unroll
+		for(int i =0;i<MAX_TCP_OPTION;i++){
+			if(opt + 1 > opt_end || opt + 1 > data_end){
+				DEBUG_PRINT("No timestamp and reach opt_end or data_end\n");
+				return -1;
+			}
+			if(*opt == 0){
+				DEBUG_PRINT("No timestamp and reach end of list\n");
+				return -1;
+			}
+			if(*opt == 1){
+				// Find NOP(1B) continued;
+				opt++;
+				continue;
+			}
+			if(opt + 2 > opt_end || opt + 2 > data_end){
+				return -1;
+			}
+			opt_len = *(opt + 1);
+
+			// option 2 ---> MSS(4B)
+			if(*opt != 8){
+				
+				opt += opt_len;
+			}
+			else{
+				ts = opt;
+				if( ts+1 > data_end){
+					return -1;
+				}
+				opt_ts_offset = (void*)opt - (void*)nh->pos;
+				nh->pos = ts + 1;
+				*tshdr = ts;
+				DEBUG_PRINT("opt_ts_offset = %d\n", opt_ts_offset);
+				return opt_ts_offset;					
+			}
+		}
+	}
+
+	if(!found){
+		return -1;
+	}
+
+	nh->pos += opt_ts_offset;
+	if(nh->pos + opt_ts_offset > data_end) return -1;
+	ts = nh->pos;
+	if(ts + 1 > data_end){
+		return -1;
+	} 
+	nh->pos = ts + 1;
+	*tshdr = ts;
+	return opt_ts_offset;
+
 }
+
+
+
+
 
 static inline __u32 parse_ack_timestamp(struct hdr_cursor *nh,
 									void *data_end,
@@ -367,7 +507,7 @@ static inline __u32 parse_ack_timestamp(struct hdr_cursor *nh,
 		return -1;
 	}
 
-    // Mask: MSS(4B), SackOK(2B), Timestamp(1B)
+    // Mask: NOP NOP TS
     if((ack_1_mask & *tcp_opt_64) == ack_1_mask){
         DEBUG_PRINT("Match NOP, NOP, Timestamp\n");
         opt_ts_offset = 2;

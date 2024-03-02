@@ -69,8 +69,8 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
 
                     struct tcp_opt_ts* ts;
                     __u32 rx_tsval = 0;
-                    int opt_ts_offset = parse_syn_timestamp(&cur,data_end,&ts); 
-                    if(opt_ts_offset == -1) return XDP_DROP;
+                    int opt_ts_offset = parse_timestamp(&cur,tcp,data_end,&ts); 
+                    if(opt_ts_offset < 0) return XDP_DROP;
                     // Store rx packet's Tsval (in order to put into Tsecr)
                     rx_tsval = ts->tsval;
                     

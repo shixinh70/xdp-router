@@ -78,7 +78,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
             // Switch agent have parse the timestamp so can put the ts type
             // in some un-used header field.
                 if(tcp->ack && (!tcp->syn)){
-                    int opt_ts_offset = parse_ack_timestamp(&cur,data_end,&ts);
+                    int opt_ts_offset = parse_timestamp(&cur,tcp,data_end,&ts);
                     if(opt_ts_offset == -1) return XDP_DROP;   
                     __u32 tsecr = bpf_ntohl(ts->tsecr);
                     void* tcp_header_end = (void*)tcp + (tcp->doff*4);

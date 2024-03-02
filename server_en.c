@@ -119,11 +119,12 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                 if(tcp->ack && tcp->syn){
 
                     struct tcp_opt_ts* ts;
-                    int opt_ts_offset = parse_synack_timestamp(&cur,data_end,&ts);
+                    int opt_ts_offset = parse_timestamp(&cur,tcp,data_end,&ts);
                     if(opt_ts_offset == -1) return TC_ACT_SHOT;
 
                     //DEBUG_PRINT ("TC: SYNACK packet ingress! csum = %x\n",bpf_ntohs(tcp->check));
-                    DEBUG_PRINT("TC: Update delta = detla(%u) - SYNACK's seg(%u) - 1= %u\n", val.delta, bpf_htonl(tcp->seq) ,val.delta - (tcp->seq + (bpf_htonl(1))));
+                    DEBUG_PRINT("TC: Update delta = detla(%u) - SYNACK's seg(%u) - 1= %u\n", 
+                                val.delta, bpf_htonl(tcp->seq) ,val.delta - (tcp->seq + (bpf_htonl(1))));
                     // Modify delta (need to check the byte order problem)
                     
                     val.delta = val.delta - bpf_ntohl(tcp->seq) - 1;
@@ -131,7 +132,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
 
                     //BPF_EXIST will update an existing element (may have bug)
                     bpf_map_update_elem(&conntrack_map,&key,&val,BPF_EXIST);
-                    tcp->window = bpf_htons(0x1F6);
+                    tcp->window = bpf_htons(0x1F6); // 502
                     // Swap ip
                     ip->saddr ^= ip->daddr;
                     ip->daddr ^= ip->saddr;
@@ -218,14 +219,13 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                 // Router use TS==cookie to validate ACK packet.
                 else {
                     struct tcp_opt_ts* ts;
-                    int opt_ts_offset = parse_ack_timestamp(&cur,data_end,&ts);
+                    int opt_ts_offset = parse_timestamp(&cur,tcp,data_end,&ts);
                     if(opt_ts_offset == -1) return TC_ACT_SHOT;
                     val.ts_val_s = ts->tsval;
                     ts->tsval = get_hash(ip->daddr,ip->saddr,tcp->dest,tcp->source);
                     tcp->seq = bpf_htonl(bpf_ntohl(tcp->seq) + val.delta);
                     bpf_map_update_elem(&conntrack_map,&key,&val,BPF_EXIST);
-                    
-                    DEBUG_PRINT ("TC: Send out ack packet seg = %u, ack = %u, delta = %u\n",
+                    DEBUG_PRINT ("TC: Send out Ack packet seg = %u, ack = %u, delta = %u\n",
                                 bpf_ntohl(tcp->seq),bpf_ntohl(tcp->ack_seq), val.delta);
                 }
             }
