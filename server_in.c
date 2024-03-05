@@ -10,20 +10,10 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include "router.h"
-#define MAX_ENTRY 2000
+
 char _license[] SEC("license") = "GPL";
 
-struct map_key_t {
-        __u32 src_ip;
-        __u32 dst_ip;
-        __u16 src_port;
-        __u16 dst_port;
-};
 
-struct map_val_t {
-        __u32 ts_val_s;
-        __u32 delta;	
-};
 
 struct {
         __uint(type, BPF_MAP_TYPE_HASH);
@@ -32,6 +22,8 @@ struct {
         __type(value, struct map_val_t);
         __uint(pinning, LIBBPF_PIN_BY_NAME);
 } conntrack_map SEC(".maps");
+
+
 
 // main router logic
 SEC("prog") int xdp_router(struct xdp_md *ctx) {
@@ -80,7 +72,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                 if(tcp->ack && (!tcp->syn)){
                     int opt_ts_offset = parse_timestamp(&cur,tcp,data_end,&ts);
                     if(opt_ts_offset == -1) return XDP_DROP;   
-                    __u32 tsecr = bpf_ntohl(ts->tsecr);
+                    __u32 tsecr = ts->tsecr;
                     void* tcp_header_end = (void*)tcp + (tcp->doff*4);
                     if(tcp_header_end > data_end) return XDP_DROP;
                     // Ack packet which TS == TS_START and no payload (Pass router's cookie check).
@@ -99,7 +91,8 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         // Update and Create val are same function;
                         // Then store the ack for compute ack delta.
                         struct map_val_t val = {.delta = bpf_ntohl(tcp->ack_seq),
-                                                .ts_val_s = ts->tsval};
+                                                .ts_val_s = ts->tsval,
+                                                .cookie = ts->tsecr};
                                          
                         bpf_map_update_elem(&conntrack_map, &key, &val, BPF_ANY);
                         DEBUG_PRINT("SERVER_IN: Update delta = %u\n",val.delta);
@@ -119,7 +112,6 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         if((void*)ptr + 4 > data_end) return XDP_DROP;
                        
                         __u32 tcp_old_flag = *ptr;
-
                         tcp->ack = 0;tcp->syn = 1;
                         __u32 tcp_new_flag = *ptr;
 
@@ -153,7 +145,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         }
                         else {
                             DEBUG_PRINT ("SERVER_IN: Connection not exist in map!\n");
-                            
+                            return XDP_DROP;
                         }
                         // Read val from pinned map;
                         if( bpf_probe_read_kernel(&val,sizeof(val),val_p) != 0){
@@ -164,8 +156,12 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         __u32 rx_ack_seq = tcp->ack_seq;
                         __u32 rx_tsecr = ts->tsecr;
                         __u64 tcp_csum = tcp->check;
-                        tcp->ack_seq = bpf_htonl(bpf_ntohl(tcp->ack_seq) - val.delta);
-                        ts->tsecr = val.ts_val_s;
+                        
+                        val.cookie = ts->tsecr;
+                        tcp->ack_seq = bpf_htonl(bpf_ntohl(tcp->ack_seq) - val.delta); // Ack delta
+                        ts->tsecr = val.ts_val_s; // convert cookie to server's ts_val
+                        bpf_map_update_elem(&conntrack_map,&key,&val,BPF_EXIST);
+
                         DEBUG_PRINT("SERVER_IN: Packet (after ack -= delta) seq = %u, ack = %u\n",bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
                         tcp_csum = bpf_csum_diff(&rx_ack_seq, 4, &tcp->ack_seq, 4, ~tcp_csum);
                         tcp_csum = bpf_csum_diff(&rx_tsecr, 4, &ts->tsecr, 4, tcp_csum);

@@ -12,14 +12,35 @@
 #include "router.h"
 
 char _license[] SEC("license") = "GPL";
+struct {
+        __uint(type, BPF_MAP_TYPE_HASH);
+        __uint(max_entries, KEY_MAP_ENTRY);
+        __type(key, __u32);
+        __type(value, __u64);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
+} key_map SEC(".maps");
 
 
 
-// helper: decr ttl by 1 for IP and IPv6
+struct {
+        __uint(type, BPF_MAP_TYPE_ARRAY);
+        __uint(max_entries, MAP_COOKIE_ENTRY);
+        __type(key, __u32);
+        __type(value, __u16);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
+} map_cookie_map_16 SEC(".maps");
+struct {
+        __uint(type, BPF_MAP_TYPE_ARRAY);
+        __uint(max_entries, MAP_COOKIE_ENTRY);
+        __type(key, __u32);
+        __type(value, __u32);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
+} map_cookie_map_32 SEC(".maps");
 
 
-// main router logic
 SEC("prog") int xdp_router(struct xdp_md *ctx) {
+
+
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
     struct hdr_cursor cur;
@@ -125,8 +146,21 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                     ip->check = csum_fold_helper_64(bpf_csum_diff((__u32*)&old_ip_totlen,4
                                                                  ,(__u32*)&new_ip_totlen,4,~old_ip_csum));
                   
+                    // Get 32bit hash_cookie for handshaking 
+                    __u64* divided_key = bpf_map_lookup_elem(&key_map,&DIVIDED_KEY);
+                    if(!divided_key){
+                        DEBUG_PRINT("Fetch divided_key fail\n");
+                        return XDP_DROP;
+                    }
+
+                    __u32 hash_cookie_32 = get_map_cookie(*divided_key,ip->saddr,&map_cookie_map_32,32); 
+                    DEBUG_PRINT("cookie = %u\n",hash_cookie_32);
+                    if((__s32)hash_cookie_32 < 0){
+                        return XDP_DROP;
+                    }
+
                     // Modify tcphdr after shrink packet
-                    tcp->seq = get_hash(orig_src_ip,orig_dst_ip,orig_src_port,orig_dst_port);
+                    tcp->seq = bpf_htonl(hash_cookie_32);
                     tcp->ack_seq = rx_seq + bpf_htonl(1);
                     tcp->source = orig_dst_port;
                     tcp->dest = orig_src_port;
@@ -141,7 +175,7 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                     sa_opt->ts.kind = 8;
                     sa_opt->ts.length = 10;
                     sa_opt->ts.tsecr = rx_tsval;
-                    sa_opt->ts.tsval = bpf_htonl(TS_START);
+                    sa_opt->ts.tsval = TS_START;
                     // Recompute tcp checksum
                     //if((void*)opt_copy + tcp_opt_len > data_end) return XDP_DROP;
 
@@ -165,15 +199,24 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                 }   
                 else if(tcp->ack && (!tcp->syn)){
                     //DEBUG_PRINT("Router:  ACK packet ingress\n");
+                    __u64* divided_key = bpf_map_lookup_elem(&key_map,&DIVIDED_KEY);
+                    if(!divided_key){
+                        DEBUG_PRINT("Fetch divided_key fail\n");
+                        return XDP_DROP;
+                    }
+
+                    __u32 hash_cookie_32 = get_map_cookie(*divided_key,ip->saddr,&map_cookie_map_32,32);
+                    if((__s32)hash_cookie_32 < 0){
+                        return XDP_DROP;
+                    }
+
                     struct tcp_opt_ts* ts;
-                    
-                    __u32 cookie = get_hash(ip->saddr, ip->daddr, tcp->source, tcp->dest);
-                    int opt_ts_offset = parse_ack_timestamp(&cur,data_end,&ts); 
+                    int opt_ts_offset = parse_timestamp(&cur,tcp,data_end,&ts); 
                     if(opt_ts_offset == -1) return XDP_DROP;
-                    if(ts->tsecr == bpf_htonl(TS_START)){
+                    if(ts->tsecr == TS_START){
                         DEBUG_PRINT("Router: Packet tsecr == TS_START\n");
                         __u32 rx_ack = tcp->ack_seq;
-                        if(rx_ack - bpf_htonl(1) == cookie){
+                        if(bpf_ntohl(rx_ack) - 1 == hash_cookie_32) {
                             DEBUG_PRINT ("Router: Packet pass ACK cookie check!\n");
                         }
                         else{
@@ -181,15 +224,61 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                             return XDP_DROP;
                         }
                     }
+
+                    // If tsecr != timetsamp
                     else{
                         DEBUG_PRINT("Router: Packet tsecr != TS_START !\n");
-                        if(ts->tsecr == cookie){
-                            DEBUG_PRINT ("Router: Packet pass Timestamp cookie!\n");
-                        }
-                        else{
-                            DEBUG_PRINT ("Router: Packet fail Timestamp cookie!\n");
+                        __u32 ts_cookie = bpf_ntohl(ts->tsecr);
+
+                        __u64* divided_key = bpf_map_lookup_elem(&key_map,&DIVIDED_KEY);
+                        if(!divided_key){
+                            DEBUG_PRINT("Fetch divided_key fail\n");
                             return XDP_DROP;
                         }
+
+                        __u32 map_cookie_14 = get_map_cookie(*divided_key,ip->saddr,&map_cookie_map_16,14);
+                        if((__s32)map_cookie_14 < 0){
+                            return XDP_DROP;
+                        }
+
+                        // Match first key
+                        if ((((ts_cookie << 4)>>18) ^ map_cookie_14) == 0){
+                            DEBUG_PRINT ("Router: Packet pass map_cookie_14 cookie!\n");
+                        }
+
+                        else{
+                            DEBUG_PRINT ("Router: Packet fail map_cookie_14 cookie!\n");
+                            void* hash_key_p;__u64 hash_key;
+                            hash_key_p = bpf_map_lookup_elem(&key_map,&HASH_KEY);
+                            if(!hash_key_p){
+                                DEBUG_PRINT("Router: Get hash key fail\n");
+                                return XDP_DROP;
+                            }
+                            hash_key = *(__u64*)hash_key_p;
+                            struct map_key_t flow = {
+                                .src_ip = ip->saddr,
+                                .dst_ip = ip->daddr,
+                                .src_port = tcp->source,
+                                .dst_port = tcp->dest
+                            };
+                            __u32 hash_cookie = get_hash_cookie(hash_key,&flow);
+                            
+                            // Match second key
+                            if(((ts_cookie & 0x00003fff) ^ hash_cookie) == 0){
+                                DEBUG_PRINT ("Router: Packet pass hash_cookie_14!\n");
+                            }
+                            else{
+                                    DEBUG_PRINT ("Router: Packet fail hash_cookie cookie!\n");
+                                    return XDP_DROP;
+                            }
+                        }
+                        // if(ts->tsecr == hash_cookie_32){
+                        //     DEBUG_PRINT ("Router: Packet pass Timestamp cookie!\n");
+                        // }
+                        // else{
+                        //     DEBUG_PRINT ("Router: Packet fail Timestamp cookie!\n");
+                        //     return XDP_DROP;
+                        // }
                     }
 
                 }

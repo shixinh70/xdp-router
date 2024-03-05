@@ -12,29 +12,9 @@
 #include <bpf/bpf_endian.h>
 #include <linux/pkt_cls.h>
 #include "router.h"
-#define MAX_ENTRY 2000
 
 
 char _license[] SEC("license") = "GPL";
-
-struct eth_mac_t
-{
-    __u8 buf[6];
-}__attribute__((packed));
-
-
-struct map_key_t {
-        __u32 src_ip;
-        __u32 dst_ip;
-        __u16 src_port;
-        __u16 dst_port;
-};
-
-struct map_val_t {
-        __u32 ts_val_s;
-        __u32 delta;	
-};
-
 
 
 struct {
@@ -44,6 +24,31 @@ struct {
         __type(value, struct map_val_t);
         __uint(pinning, LIBBPF_PIN_BY_NAME);
 } conntrack_map SEC(".maps");
+
+
+struct {
+        __uint(type, BPF_MAP_TYPE_ARRAY);
+        __uint(max_entries, MAP_COOKIE_ENTRY);
+        __type(key, __u32);
+        __type(value, __u16);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
+} map_cookie_map_16 SEC(".maps");
+struct {
+        __uint(type, BPF_MAP_TYPE_ARRAY);
+        __uint(max_entries, MAP_COOKIE_ENTRY);
+        __type(key, __u32);
+        __type(value, __u32);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
+} map_cookie_map_32 SEC(".maps");
+
+struct {
+        __uint(type, BPF_MAP_TYPE_HASH);
+        __uint(max_entries, KEY_MAP_ENTRY);
+        __type(key, __u32);
+        __type(value, __u64);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
+} key_map SEC(".maps");
+
 
 // main router logic
 SEC("prog") int xdp_router(struct __sk_buff *skb) {
@@ -218,15 +223,68 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                 // tsval = cookie (from here, cookie not longer be TS_START, but cookie)
                 // Router use TS==cookie to validate ACK packet.
                 else {
+                    void* hash_key_p, *divide_key_p;__u64 hash_key; __u32 divide_key;
+                    hash_key_p = bpf_map_lookup_elem(&key_map,&HASH_KEY);
+                    if(!hash_key_p){
+                        DEBUG_PRINT("TC: Get hash key fail\n");
+                        return TC_ACT_SHOT;
+                    }
+                    hash_key = *(__u64*)hash_key_p;
+                    
+                    divide_key_p = bpf_map_lookup_elem(&key_map,&DIVIDED_KEY);
+                    if(!divide_key_p){
+                        DEBUG_PRINT("TC: Get divide key fail\n");
+                        return TC_ACT_SHOT;
+                    }
+                    divide_key = *(__u32*)divide_key_p;
+
+                    __u32 ts_cookie = bpf_ntohl(val.cookie);
+                    int modify = 0;
+
+                    // Update map cookie and map key
+                    if(val.cur_divide_key != divide_key){
+                        DEBUG_PRINT("TC: Cur map cookie outdated, commpute new map cookie\n");
+                        __u32 map_cookie_14 = get_map_cookie(divide_key,ip->daddr,&map_cookie_map_16,14);
+                        if(map_cookie_14 < 0) return TC_ACT_SHOT;
+                        
+                        __u32 mask = 0xffff;
+                        ts_cookie &= (~((mask >> 2) << 14)); // mask out last 14 bit;
+                        ts_cookie |= (map_cookie_14 << 14);  // insert map_cookie
+                        val.cur_divide_key = divide_key;
+                        modify = 1; 
+                    }
+
+                    if(val.cur_key != hash_key){
+                        DEBUG_PRINT("TC: Cur hash cookie outdated, commpute new hash cookie\n");
+                        struct map_key_t flow = {
+                            .src_ip = ip->daddr,
+                            .dst_ip = ip->saddr,
+                            .src_port = tcp->dest,
+                            .dst_port = tcp->source
+                        };
+                        __u32 hash_cookie = get_hash_cookie(hash_key,&flow);
+                        __u32 mask = 0xffff;
+                        ts_cookie &= (~(mask >> 2)); // mask out last 14 bit;
+                        ts_cookie |= hash_cookie;
+                        val.cur_key = hash_key;
+                        modify = 1;
+                    }
+                    if(modify){
+                        ts_cookie += (0x010000000 << 1);     // make timestamp to be incremental
+                        val.cookie = bpf_htonl(ts_cookie);    
+                    }
+                    
                     struct tcp_opt_ts* ts;
                     int opt_ts_offset = parse_timestamp(&cur,tcp,data_end,&ts);
                     if(opt_ts_offset == -1) return TC_ACT_SHOT;
+
                     val.ts_val_s = ts->tsval;
-                    ts->tsval = get_hash(ip->daddr,ip->saddr,tcp->dest,tcp->source);
+                    ts->tsval = bpf_htonl(ts_cookie); // update ts cookie;
                     tcp->seq = bpf_htonl(bpf_ntohl(tcp->seq) + val.delta);
                     bpf_map_update_elem(&conntrack_map,&key,&val,BPF_EXIST);
                     DEBUG_PRINT ("TC: Send out Ack packet seg = %u, ack = %u, delta = %u\n",
                                 bpf_ntohl(tcp->seq),bpf_ntohl(tcp->ack_seq), val.delta);
+                    //Kernel will compute csum after TC hook.
                 }
             }
             else{
