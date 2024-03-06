@@ -16,7 +16,7 @@ BPF_CFLAGS += -Wall -Wextra
 
 .PHONY: all clean
 
-all: router.o server_in.o hping_ts.o server_en.o
+all: router.o server_in.o hping_ts.o server_en.o map
 
 clean:
 	rm -rf $(LIBBPF_DIR)/build
@@ -46,3 +46,6 @@ hping_ts.o: hping_ts.c router.h $(LIBBPF)
 server_en.o: server_en.c router.h $(LIBBPF)
 	$(CLANG) -S -target bpf $(BPF_CFLAGS) -O3 -emit-llvm -c -g -o ${@:.o=.ll} $<
 	$(LLC) -march=bpf -filetype=obj -o $@ ${@:.o=.ll}
+
+map: map.c
+	gcc map.c -Ilibbpf/src/build/usr/include/ -Llibbpf/src -lbpf -lelf -lz -g -o map

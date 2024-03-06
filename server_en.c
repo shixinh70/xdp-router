@@ -237,7 +237,7 @@ SEC("prog") int xdp_router(struct __sk_buff *skb) {
                         return TC_ACT_SHOT;
                     }
                     divide_key = *(__u32*)divide_key_p;
-
+                    DEBUG_PRINT("TC: divide_key = %u\n", divide_key);
                     __u32 ts_cookie = bpf_ntohl(val.cookie);
                     int modify = 0;
 

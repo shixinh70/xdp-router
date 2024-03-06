@@ -205,18 +205,21 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         return XDP_DROP;
                     }
 
-                    __u32 hash_cookie_32 = get_map_cookie(*divided_key,ip->saddr,&map_cookie_map_32,32);
-                    if((__s32)hash_cookie_32 < 0){
-                        return XDP_DROP;
-                    }
+                    
 
                     struct tcp_opt_ts* ts;
                     int opt_ts_offset = parse_timestamp(&cur,tcp,data_end,&ts); 
                     if(opt_ts_offset == -1) return XDP_DROP;
                     if(ts->tsecr == TS_START){
                         DEBUG_PRINT("Router: Packet tsecr == TS_START\n");
+
+                        __u32 map_cookie_32 = get_map_cookie(*divided_key,ip->saddr,&map_cookie_map_32,32);
+                        if((__s32)map_cookie_32 < 0){
+                            return XDP_DROP;
+                        }
+
                         __u32 rx_ack = tcp->ack_seq;
-                        if(bpf_ntohl(rx_ack) - 1 == hash_cookie_32) {
+                        if(bpf_ntohl(rx_ack) - 1 == map_cookie_32) {
                             DEBUG_PRINT ("Router: Packet pass ACK cookie check!\n");
                         }
                         else{
@@ -242,6 +245,8 @@ SEC("prog") int xdp_router(struct xdp_md *ctx) {
                         }
 
                         // Match first key
+                        DEBUG_PRINT("ts_cookie = %x\n", (ts_cookie<<4)>>18);
+                        DEBUG_PRINT("map_cookie_14 = %x\n", map_cookie_14);
                         if ((((ts_cookie << 4)>>18) ^ map_cookie_14) == 0){
                             DEBUG_PRINT ("Router: Packet pass map_cookie_14 cookie!\n");
                         }
